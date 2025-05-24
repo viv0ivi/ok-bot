@@ -27,4 +27,4 @@ COPY okru_post_bot.py .
 EXPOSE 5000
 
 # Команда запуска
-CMD ["python", "okru_post_bot.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "okru_post_bot:app"]
