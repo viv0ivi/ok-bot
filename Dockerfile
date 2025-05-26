@@ -16,4 +16,4 @@ COPY okru_post_bot.py .
 EXPOSE 5000
 
 # Запускаем Gunicorn
-CMD ["gunicorn", "--workers", "2", "--worker-class", "gthread", "--bind", "0.0.0.0:$PORT", "bot:application"]
+CMD ["sh", "-c", "gunicorn --workers 2 --worker-class gthread --bind 0.0.0.0:$PORT bot:application"]
