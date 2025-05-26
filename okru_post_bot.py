@@ -1,7 +1,5 @@
-
 import os
 import logging
-import asyncio
 from telegram import Bot
 from telegram.ext import Application, CommandHandler
 
@@ -25,10 +23,6 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 # Регистрация обработчика для команды /start
 application.add_handler(CommandHandler("start", cmd_start))
 
-# Запуск бота через asyncio
-async def main():
-    await application.run_polling()
-
-# Для Gunicorn запускаем через asyncio
+# Запуск бота
 if __name__ == "__main__":
-    asyncio.run(main())
+    application.run_polling()
