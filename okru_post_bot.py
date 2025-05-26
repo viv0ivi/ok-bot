@@ -1,7 +1,6 @@
 import os
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.keyboard import ReplyKeyboardButton, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 
 # Настройки из ENV
