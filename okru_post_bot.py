@@ -1,3 +1,4 @@
+
 import os
 import logging
 import asyncio
@@ -28,6 +29,6 @@ application.add_handler(CommandHandler("start", cmd_start))
 async def main():
     await application.run_polling()
 
-# Для Gunicorn, запускаем через asyncio
+# Для Gunicorn запускаем через asyncio
 if __name__ == "__main__":
     asyncio.run(main())
