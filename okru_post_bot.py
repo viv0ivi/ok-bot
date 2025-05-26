@@ -11,7 +11,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from flask import Flask, request
 from telegram import Bot, Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 
 # Настройки из ENV
 EMAIL = os.getenv("OK_EMAIL")
@@ -69,10 +69,9 @@ def post_to_group(group_url: str, video_url: str, text: str):
 
 # Telegram Webhook Bot setup
 bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot, None, workers=0)
 
-# /start command
-def cmd_start(update, context):
+# /start command - асинхронная функция
+async def cmd_start(update, context):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     keyboard = [
@@ -80,28 +79,28 @@ def cmd_start(update, context):
          InlineKeyboardButton("Указать пост", callback_data="set_post")],
         [InlineKeyboardButton("Запустить публикацию", callback_data="run_post")]
     ]
-    update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Button handler
-def button_handler(update, context):
+# Button handler - асинхронная функция
+async def button_handler(update, context):
     query = update.callback_query
     if query.from_user.id != TELEGRAM_USER_ID:
         return
     data = query.data
-    query.answer()
+    await query.answer()
     if data == "set_groups":
-        query.edit_message_text("Отправьте URL групп (через пробел/новую строку):")
+        await query.edit_message_text("Отправьте URL групп (через пробел/новую строку):")
         context.user_data["expect"] = "groups"
     elif data == "set_post":
-        query.edit_message_text("Отправьте сообщение вида:\n#пост https://ok.ru/video/... Текст")
+        await query.edit_message_text("Отправьте сообщение вида:\n#пост https://ok.ru/video/... Текст")
         context.user_data["expect"] = "post"
     elif data == "run_post":
         groups = context.user_data.get("groups") or []
         post = context.user_data.get("post")
         if not groups or not post:
-            query.edit_message_text("Сначала задайте группы и текст поста!")
+            await query.edit_message_text("Сначала задайте группы и текст поста!")
             return
-        query.edit_message_text("Запускаю публикацию...")
+        await query.edit_message_text("Запускаю публикацию...")
         start_driver()
         driver.get("https://ok.ru/")
         wait.until(EC.presence_of_element_located((By.NAME, "st.email"))).send_keys(EMAIL)
@@ -112,13 +111,13 @@ def button_handler(update, context):
         for idx, g in enumerate(groups, 1):
             post_to_group(g, video_url, text)
             delay = random.uniform(60, 120)
-            bot.send_message(chat_id=TELEGRAM_USER_ID, text=f"Опубликовано в {g} ({idx}/{len(groups)}). Жду {int(delay)} сек.")
+            await bot.send_message(chat_id=TELEGRAM_USER_ID, text=f"Опубликовано в {g} ({idx}/{len(groups)}). Жду {int(delay)} сек.")
             time.sleep(delay)
-        bot.send_message(chat_id=TELEGRAM_USER_ID, text="🎉 Публикация завершена.")
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text="🎉 Публикация завершена.")
         driver.quit()
 
-# Message handler
-def message_handler(update, context):
+# Message handler - асинхронная функция
+async def message_handler(update, context):
     if update.effective_user.id != TELEGRAM_USER_ID:
         return
     expect = context.user_data.get("expect")
@@ -126,18 +125,19 @@ def message_handler(update, context):
     if expect == "groups":
         urls = re.findall(r"https?://ok\.ru/group/\d+/?", txt)
         context.user_data["groups"] = urls
-        update.message.reply_text(f"Сохранено {len(urls)} групп.")
+        await update.message.reply_text(f"Сохранено {len(urls)} групп.")
         context.user_data.pop("expect", None)
     elif expect == "post":
         m = re.match(r"#пост\s+(https?://\S+)\s+(.+)", txt, re.IGNORECASE)
         if m:
             context.user_data["post"] = (m.group(1), m.group(2))
-            update.message.reply_text("Пост сохранён.")
+            await update.message.reply_text("Пост сохранён.")
         else:
-            update.message.reply_text("Неверный формат. Используйте: #пост URL Текст")
+            await update.message.reply_text("Неверный формат. Используйте: #пост URL Текст")
         context.user_data.pop("expect", None)
 
 # Register handlers
+dp = Application.builder().token(TELEGRAM_TOKEN).build()
 dp.add_handler(CommandHandler("start", cmd_start))
 dp.add_handler(CallbackQueryHandler(button_handler))
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
