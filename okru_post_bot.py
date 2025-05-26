@@ -1,8 +1,8 @@
 import os
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.keyboard import ReplyKeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram.types import ReplyKeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # Настройки из ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -58,7 +58,7 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 # Регистрация обработчиков
 application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CallbackQueryHandler(button_handler))
-application.add_handler(MessageHandler(Filters.text & ~Filters.command, reply_button_handler))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_button_handler))
 
 # Запуск бота
 if __name__ == "__main__":
