@@ -10,10 +10,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем код бота
-COPY okru_post_bot.py .
+COPY . .
 
 # Открываем порт для вебхука
 EXPOSE 5000
 
-# Запускаем Gunicorn
-CMD ["sh", "-c", "gunicorn --workers 2 --worker-class gthread --bind 0.0.0.0:$PORT okru_post_bot:application"]
+# Запускаем приложение с asyncio (без Gunicorn)
+CMD ["sh", "-c", "python okru_post_bot.py"]
