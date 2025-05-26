@@ -1,4 +1,1 @@
-requests
-undetected-chromedriver
-selenium
-aiogram
+python-telegram-bot==20.0
