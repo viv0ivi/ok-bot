@@ -13,6 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from flask import Flask, jsonify
 
 # Настройки из ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -32,6 +33,17 @@ logger = logging.getLogger("okru_bot")
 # Глобальные переменные для сессии
 current_session = None
 current_profile = None
+
+# Flask app для health check (нужен для Render)
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return jsonify({"status": "ok", "message": "Bot is running"})
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
 
 # Функция для получения всех профилей из переменных окружения
 def get_profiles():
@@ -134,50 +146,79 @@ class OKSession:
         raise TimeoutException("SMS-код не получен")
 
     def try_sms_verification(self):
-        data_l = self.driver.find_element(By.TAG_NAME,'body').get_attribute('data-l') or ''
-        if 'userMain' in data_l and 'anonymMain' not in data_l:
-            logger.info("Уже залогинены")
-            return
-        logger.info("Запрашиваю SMS-код")
-        btn = self.wait.until(EC.element_to_be_clickable((By.XPATH,
-            "//input[@type='submit' and @value='Get code']"
-        )))
-        btn.click()
-        time.sleep(1)
-        if 'too often' in self.driver.find_element(By.TAG_NAME,'body').text.lower():
-            logger.error("Rate limit на SMS")
+        try:
+            logger.info(f"🔍 Проверяю статус авторизации для {self.person_name}")
+            data_l = self.driver.find_element(By.TAG_NAME,'body').get_attribute('data-l') or ''
+            if 'userMain' in data_l and 'anonymMain' not in data_l:
+                logger.info(f"✅ {self.person_name} уже авторизован!")
+                return True
+                
+            logger.info(f"📱 Требуется SMS-верификация для {self.person_name}")
+            logger.info(f"🔄 Запрашиваю SMS-код для {self.person_name}")
+            btn = self.wait.until(EC.element_to_be_clickable((By.XPATH,
+                "//input[@type='submit' and @value='Get code']"
+            )))
+            btn.click()
+            time.sleep(1)
+            
+            body_text = self.driver.find_element(By.TAG_NAME,'body').text.lower()
+            if 'too often' in body_text:
+                logger.error(f"⏰ RATE LIMIT на SMS для {self.person_name}! Попробуйте позже")
+                return False
+                
+            logger.info(f"⌛ Ожидаю ввод SMS-кода для {self.person_name}...")
+            inp = self.wait.until(EC.presence_of_element_located((By.XPATH,
+                "//input[@id='smsCode' or contains(@name,'smsCode')]"
+            )))
+            
+            logger.info(f"📨 Жду SMS-код от пользователя для {self.person_name}")
+            code = self.retrieve_sms_code()
+            
+            logger.info(f"🔢 Ввожу SMS-код для {self.person_name}")
+            inp.clear()
+            inp.send_keys(code)
+            next_btn = self.driver.find_element(By.XPATH,
+                "//input[@type='submit' and @value='Next']"
+            )
+            next_btn.click()
+            
+            logger.info(f"✅ SMS-верификация успешна для {self.person_name}!")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка SMS-верификации для {self.person_name}: {str(e)}")
             return False
-        inp = self.wait.until(EC.presence_of_element_located((By.XPATH,
-            "//input[@id='smsCode' or contains(@name,'smsCode')]"
-        )))
-        code = self.retrieve_sms_code()
-        inp.clear()
-        inp.send_keys(code)
-        next_btn = self.driver.find_element(By.XPATH,
-            "//input[@type='submit' and @value='Next']"
-        )
-        next_btn.click()
-        logger.info("SMS-верификация успешна")
-        return True
 
     def authenticate(self):
         try:
+            logger.info(f"🚀 Начинаю авторизацию для {self.person_name}")
             self.init_driver()
-            logger.info(f"Авторизация {self.person_name}")
+            logger.info(f"🌐 Открываю OK.ru для {self.person_name}")
             self.driver.get("https://ok.ru/")
+            
+            logger.info(f"📝 Ввожу email для {self.person_name}")
             self.wait.until(EC.presence_of_element_located((By.NAME,'st.email'))).send_keys(self.email)
+            
+            logger.info(f"🔑 Ввожу пароль для {self.person_name}")
             self.driver.find_element(By.NAME,'st.password').send_keys(self.password)
+            
+            logger.info(f"✅ Нажимаю кнопку входа для {self.person_name}")
             self.driver.find_element(By.CSS_SELECTOR, "input[type='submit']").click()
             time.sleep(2)
+            
+            logger.info(f"🔍 Проверяю подтверждение личности для {self.person_name}")
             self.try_confirm_identity()
+            
+            logger.info(f"📱 Проверяю необходимость SMS-верификации для {self.person_name}")
             if self.try_sms_verification():
                 self.authenticated = True
-                logger.info(f"Успешный вход для {self.person_name}")
+                logger.info(f"🎉 УСПЕШНАЯ АВТОРИЗАЦИЯ для {self.person_name}!")
+                logger.info(f"✅ {self.person_name} готов к работе. Ожидаю команды...")
                 return True
             else:
+                logger.error(f"❌ Не удалось пройти SMS-верификацию для {self.person_name}")
                 return False
         except Exception as e:
-            logger.error(f"Ошибка авторизации: {str(e)}")
+            logger.error(f"💥 ОШИБКА АВТОРИЗАЦИИ для {self.person_name}: {str(e)}")
             return False
 
     def retrieve_groups(self, poll=5):
@@ -287,15 +328,19 @@ class OKSession:
 # Функция для запуска авторизации в отдельном потоке
 def start_auth_thread(profile_data, profile_id):
     global current_session, current_profile
+    logger.info(f"🔄 Создаю сессию для {profile_data['person']}")
     session = OKSession(profile_data['email'], profile_data['password'], profile_data['person'])
     
+    logger.info(f"🚀 Запускаю процесс авторизации для {profile_data['person']}")
     if session.authenticate():
         current_session = session
         current_profile = profile_id
+        logger.info(f"🎯 Сессия активна для {profile_data['person']}. Готов к получению команд!")
         # После успешной авторизации запускаем рабочий процесс
+        logger.info(f"▶️ Запускаю рабочий процесс для {profile_data['person']}")
         session.start_posting_workflow()
     else:
-        logger.error(f"Не удалось авторизоваться для {profile_data['person']}")
+        logger.error(f"🚫 АВТОРИЗАЦИЯ ПРОВАЛЕНА для {profile_data['person']}")
         session.close()
 
 # Telegram бот функции
@@ -402,9 +447,23 @@ application.add_handler(CallbackQueryHandler(button_callback))
 
 # Запуск бота
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке для health check
+    def run_flask():
+        port = int(os.environ.get('PORT', 5000))
+        app.run(host='0.0.0.0', port=port, debug=False)
+    
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    logger.info("🤖 Запускаю Telegram бота...")
+    logger.info("🌐 Flask health check запущен")
+    
     try:
         application.run_polling()
     finally:
         # Закрываем активную сессию при завершении
         if current_session:
+            logger.info("🔄 Закрываю активную сессию...")
             current_session.close()
+        logger.info("👋 Бот остановлен")
