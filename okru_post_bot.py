@@ -638,4 +638,126 @@ async def show_profiles(update, context):
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
     
     await update.callback_query.edit_message_text(
-        "Оберіть проф
+        "Оберіть профіль для авторизації:",
+        reply_markup=reply_markup
+    )
+
+async def button_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'branch':
+        await show_profiles(update, context)
+    
+    elif query.data.startswith('profile_'):
+        profile_id = int(query.data.split('_')[1])
+        profiles = get_profiles()
+        
+        if profile_id in profiles:
+            selected_profile = profiles[profile_id]
+            
+            message = f"✅ Обрано профіль: {selected_profile['person']}\n"
+            message += f"📧 Email: {selected_profile['email']}\n"
+            message += "🔄 Виконується авторизація...\n\n"
+            message += "📱 Якщо потрібен SMS-код, надішліть його у форматі:\n"
+            message += "#код 123456\n\n"
+            message += "Після авторизації надішліть:\n"
+            message += "📋 #группы [список ссылок]\n"
+            message += "📝 #пост [ссылка на видео] [текст поста]\n\n"
+            message += "📸 Скриншоты процесса будут отправляться автоматически"
+            
+            # Добавляем кнопку для возврата к выбору профилей
+            inline_keyboard = [
+                [InlineKeyboardButton("🔙 Обрати інший профіль", callback_data='branch')],
+                [InlineKeyboardButton("🏠 На початок", callback_data='back_to_start')]
+            ]
+            reply_markup = InlineKeyboardMarkup(inline_keyboard)
+            
+            await query.edit_message_text(message, reply_markup=reply_markup)
+            
+            # Запускаем авторизацию в отдельном потоке
+            auth_thread = threading.Thread(
+                target=start_auth_thread, 
+                args=(selected_profile, profile_id)
+            )
+            auth_thread.daemon = True
+            auth_thread.start()
+            
+            logger.info(f"Запущена авторизация для профиля: {selected_profile['person']}")
+        else:
+            await query.edit_message_text("❌ Профіль не знайдено!")
+    
+    elif query.data == 'back_to_start':
+        await cmd_start_callback(update, context)
+
+async def cmd_start_callback(update, context):
+    inline_keyboard = [
+        [InlineKeyboardButton("🌿 Розгалуджувати", callback_data='branch')]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard)
+    
+    await update.callback_query.edit_message_text(
+        "Вітаю! Оберіть дію:",
+        reply_markup=reply_markup
+    )
+
+# Создание Telegram приложения
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Регистрация обработчиков
+application.add_handler(CommandHandler("start", cmd_start))
+application.add_handler(CallbackQueryHandler(button_callback))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Запуск бота
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    
+    if USE_WEBHOOK and WEBHOOK_URL:
+        logger.info("🌐 Запуск в режиме Webhook")
+        
+        # Настройка webhook
+        async def set_webhook():
+            await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            logger.info(f"Webhook установлен: {WEBHOOK_URL}/webhook")
+        
+        # Запускаем установку webhook
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(set_webhook())
+        
+        # Запускаем Flask
+        logger.info(f"🚀 Запуск Flask сервера на порту {port}")
+        app.run(host='0.0.0.0', port=port, debug=False)
+        
+    else:
+        logger.info("🤖 Запуск в режиме Polling")
+        
+        # Запускаем Flask в отдельном потоке для health check
+        def run_flask():
+            app.run(host='0.0.0.0', port=port, debug=False)
+        
+        flask_thread = threading.Thread(target=run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
+        
+        logger.info("🌐 Flask health check запущен")
+        
+        try:
+            # Сначала удаляем webhook если он был установлен
+            async def clear_webhook():
+                await application.bot.delete_webhook()
+                logger.info("Webhook удален")
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(clear_webhook())
+            
+            # Запускаем polling
+            application.run_polling()
+        finally:
+            # Закрываем активную сессию при завершении
+            if current_session:
+                logger.info("🔄 Закрываю активную сессию...")
+                current_session.close()
+            logger.info("👋 Бот остановлен")
