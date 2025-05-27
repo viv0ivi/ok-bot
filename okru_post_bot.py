@@ -11,13 +11,16 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
+import json
 
 # Настройки из ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://your-app.onrender.com/webhook
+USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 
 # Проверка переменной окружения
 if not TELEGRAM_TOKEN:
@@ -40,8 +43,11 @@ sms_code_received = None
 groups_received = None
 post_info_received = None
 
-# Flask app для health check (нужен для Render)
+# Flask app
 app = Flask(__name__)
+
+# Telegram приложение (глобальная переменная)
+application = None
 
 @app.route('/')
 def health_check():
@@ -50,6 +56,20 @@ def health_check():
 @app.route('/health')
 def health():
     return jsonify({"status": "healthy"})
+
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Обработчик webhook от Telegram"""
+    if request.content_type == 'application/json':
+        try:
+            update_data = request.get_json()
+            update = Update.de_json(update_data, application.bot)
+            await application.process_update(update)
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            logger.error(f"Ошибка обработки webhook: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+    return jsonify({"status": "error", "message": "Invalid content type"}), 400
 
 # Функция для получения всех профилей из переменных окружения
 def get_profiles():
@@ -465,23 +485,53 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_m
 
 # Запуск бота
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке для health check
-    def run_flask():
-        port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5000))
+    
+    if USE_WEBHOOK and WEBHOOK_URL:
+        logger.info("🌐 Запуск в режиме Webhook")
+        
+        # Настройка webhook
+        async def set_webhook():
+            await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+            logger.info(f"Webhook установлен: {WEBHOOK_URL}/webhook")
+        
+        # Запускаем установку webhook
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(set_webhook())
+        
+        # Запускаем Flask
+        logger.info(f"🚀 Запуск Flask сервера на порту {port}")
         app.run(host='0.0.0.0', port=port, debug=False)
-    
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    logger.info("🤖 Запускаю Telegram бота...")
-    logger.info("🌐 Flask health check запущен")
-    
-    try:
-        application.run_polling()
-    finally:
-        # Закрываем активную сессию при завершении
-        if current_session:
-            logger.info("🔄 Закрываю активную сессию...")
-            current_session.close()
-        logger.info("👋 Бот остановлен")
+        
+    else:
+        logger.info("🤖 Запуск в режиме Polling")
+        
+        # Запускаем Flask в отдельном потоке для health check
+        def run_flask():
+            app.run(host='0.0.0.0', port=port, debug=False)
+        
+        flask_thread = threading.Thread(target=run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
+        
+        logger.info("🌐 Flask health check запущен")
+        
+        try:
+            # Сначала удаляем webhook если он был установлен
+            async def clear_webhook():
+                await application.bot.delete_webhook()
+                logger.info("Webhook удален")
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(clear_webhook())
+            
+            # Запускаем polling
+            application.run_polling()
+        finally:
+            # Закрываем активную сессию при завершении
+            if current_session:
+                logger.info("🔄 Закрываю активную сессию...")
+                current_session.close()
+            logger.info("👋 Бот остановлен")
