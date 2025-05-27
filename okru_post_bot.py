@@ -1,10 +1,10 @@
 import os
 import time
 import re
-import requests
 import logging
 import sys
 import threading
+import asyncio
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -12,7 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from flask import Flask, jsonify
 
 # Настройки из ENV
@@ -30,9 +30,15 @@ if not TELEGRAM_USER_ID:
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger("okru_bot")
 
-# Глобальные переменные для сессии
+# Глобальные переменные для сессии и ожидания команд
 current_session = None
 current_profile = None
+waiting_for_sms = False
+waiting_for_groups = False
+waiting_for_post = False
+sms_code_received = None
+groups_received = None
+post_info_received = None
 
 # Flask app для health check (нужен для Render)
 app = Flask(__name__)
@@ -112,36 +118,24 @@ class OKSession:
         except:
             logger.info("Нет страницы подтверждения личности")
 
-    def retrieve_sms_code(self, timeout=120, poll=5):
-        api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        last = None
-        try:
-            init = requests.get(api, params={'timeout':0}).json()
-            if init.get('ok'):
-                ids = [u['update_id'] for u in init['result']]
-                last = max(ids) + 1 if ids else None
-        except:
-            pass
-        deadline = time.time() + timeout
+    def wait_for_sms_code(self, timeout=120):
+        global waiting_for_sms, sms_code_received
+        waiting_for_sms = True
+        sms_code_received = None
+        
         logger.info("Ожидаю SMS-код")
+        deadline = time.time() + timeout
+        
         while time.time() < deadline:
-            try:
-                resp = requests.get(api, params={'timeout':0,'offset': last}).json()
-            except:
-                time.sleep(poll)
-                continue
-            if resp.get('ok'):
-                for upd in resp['result']:
-                    last = upd['update_id'] + 1
-                    msg = upd.get('message') or {}
-                    if str(msg.get('chat',{}).get('id')) != TELEGRAM_USER_ID:
-                        continue
-                    txt = msg.get('text','').strip()
-                    m = re.match(r"^(?:#код\s*)?(\d{4,6})$", txt, re.IGNORECASE)
-                    if m:
-                        logger.info("SMS-код получен")
-                        return m.group(1)
-            time.sleep(poll)
+            if sms_code_received is not None:
+                code = sms_code_received
+                sms_code_received = None
+                waiting_for_sms = False
+                logger.info("SMS-код получен")
+                return code
+            time.sleep(1)
+        
+        waiting_for_sms = False
         logger.error("Не получили SMS-код")
         raise TimeoutException("SMS-код не получен")
 
@@ -172,7 +166,7 @@ class OKSession:
             )))
             
             logger.info(f"📨 Жду SMS-код от пользователя для {self.person_name}")
-            code = self.retrieve_sms_code()
+            code = self.wait_for_sms_code()
             
             logger.info(f"🔢 Ввожу SMS-код для {self.person_name}")
             inp.clear()
@@ -221,64 +215,35 @@ class OKSession:
             logger.error(f"💥 ОШИБКА АВТОРИЗАЦИИ для {self.person_name}: {str(e)}")
             return False
 
-    def retrieve_groups(self, poll=5):
-        api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        last = None
-        try:
-            init = requests.get(api, params={'timeout':0}).json()
-            if init.get('ok'):
-                ids = [u['update_id'] for u in init['result']]
-                last = max(ids) + 1 if ids else None
-        except:
-            pass
+    def wait_for_groups(self):
+        global waiting_for_groups, groups_received
+        waiting_for_groups = True
+        groups_received = None
+        
         logger.info("Жду команду #группы")
-        while True:
-            resp = requests.get(api, params={'timeout':0,'offset': last}).json()
-            if resp.get('ok'):
-                for upd in resp['result']:
-                    last = upd['update_id'] + 1
-                    msg = upd.get('message') or {}
-                    if str(msg.get('chat',{}).get('id')) != TELEGRAM_USER_ID:
-                        continue
-                    txt = msg.get('text','').strip()
-                    m = re.match(r"#группы\s+(.+)", txt, re.IGNORECASE)
-                    if m:
-                        urls = re.findall(r"https?://ok\.ru/group/\d+/?", m.group(1))
-                        if urls:
-                            logger.info("Список групп получен")
-                            return urls
-            time.sleep(poll)
+        while groups_received is None:
+            time.sleep(1)
+        
+        groups = groups_received
+        groups_received = None
+        waiting_for_groups = False
+        logger.info("Список групп получен")
+        return groups
 
-    def retrieve_post_info(self, poll=5):
-        api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        last = None
-        try:
-            init = requests.get(api, params={'timeout':0}).json()
-            if init.get('ok'):
-                ids = [u['update_id'] for u in init['result']]
-                last = max(ids) + 1 if ids else None
-        except:
-            pass
+    def wait_for_post_info(self):
+        global waiting_for_post, post_info_received
+        waiting_for_post = True
+        post_info_received = None
+        
         logger.info("Жду команду #пост")
-        while True:
-            resp = requests.get(api, params={'timeout':0,'offset': last}).json()
-            if resp.get('ok'):
-                for upd in resp['result']:
-                    last = upd['update_id'] + 1
-                    msg = upd.get('message') or {}
-                    if str(msg.get('chat',{}).get('id')) != TELEGRAM_USER_ID:
-                        continue
-                    txt = msg.get('text','').strip()
-                    m = re.match(r"#пост\s+(.+)", txt, re.IGNORECASE)
-                    if m:
-                        rest = m.group(1).strip()
-                        url_m = re.search(r"https?://\S+", rest)
-                        if url_m:
-                            vid = url_m.group(0)
-                            body = rest.replace(vid, "").strip()
-                            logger.info("Инфо для поста получено")
-                            return vid, body
-            time.sleep(poll)
+        while post_info_received is None:
+            time.sleep(1)
+        
+        post_info = post_info_received
+        post_info_received = None
+        waiting_for_post = False
+        logger.info("Инфо для поста получено")
+        return post_info
 
     def post_to_group(self, group_url, video_url, text):
         self.driver.get(group_url.rstrip('/') + '/post')
@@ -312,8 +277,8 @@ class OKSession:
 
     def start_posting_workflow(self):
         try:
-            groups = self.retrieve_groups()
-            video_url, post_text = self.retrieve_post_info()
+            groups = self.wait_for_groups()
+            video_url, post_text = self.wait_for_post_info()
             for g in groups:
                 self.post_to_group(g, video_url, post_text)
             logger.info("Все задачи выполнены")
@@ -342,6 +307,58 @@ def start_auth_thread(profile_data, profile_id):
     else:
         logger.error(f"🚫 АВТОРИЗАЦИЯ ПРОВАЛЕНА для {profile_data['person']}")
         session.close()
+
+# Обработчик текстовых сообщений
+async def handle_message(update, context):
+    global waiting_for_sms, waiting_for_groups, waiting_for_post
+    global sms_code_received, groups_received, post_info_received
+    
+    # Проверяем, что сообщение от нужного пользователя
+    if str(update.message.chat.id) != TELEGRAM_USER_ID:
+        return
+    
+    text = update.message.text.strip()
+    
+    # Обработка SMS-кода
+    if waiting_for_sms:
+        sms_match = re.match(r"^(?:#код\s*)?(\d{4,6})$", text, re.IGNORECASE)
+        if sms_match:
+            sms_code_received = sms_match.group(1)
+            await update.message.reply_text("✅ SMS-код получен!")
+            return
+    
+    # Обработка команды #группы
+    if text.lower().startswith("#группы"):
+        groups_match = re.match(r"#группы\s+(.+)", text, re.IGNORECASE)
+        if groups_match:
+            urls = re.findall(r"https?://ok\.ru/group/\d+/?", groups_match.group(1))
+            if urls:
+                if waiting_for_groups:
+                    groups_received = urls
+                    await update.message.reply_text(f"✅ Получен список из {len(urls)} групп!")
+                else:
+                    await update.message.reply_text("❌ Сначала нужно авторизоваться!")
+            else:
+                await update.message.reply_text("❌ Не найдены корректные ссылки на группы!")
+        return
+    
+    # Обработка команды #пост
+    if text.lower().startswith("#пост"):
+        post_match = re.match(r"#пост\s+(.+)", text, re.IGNORECASE)
+        if post_match:
+            rest = post_match.group(1).strip()
+            url_match = re.search(r"https?://\S+", rest)
+            if url_match:
+                video_url = url_match.group(0)
+                post_text = rest.replace(video_url, "").strip()
+                if waiting_for_post:
+                    post_info_received = (video_url, post_text)
+                    await update.message.reply_text("✅ Информация для поста получена!")
+                else:
+                    await update.message.reply_text("❌ Сначала нужно авторизоваться и отправить группы!")
+            else:
+                await update.message.reply_text("❌ Не найдена ссылка на видео!")
+        return
 
 # Telegram бот функции
 async def cmd_start(update, context):
@@ -444,6 +461,7 @@ application = Application.builder().token(TELEGRAM_TOKEN).build()
 # Регистрация обработчиков
 application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CallbackQueryHandler(button_callback))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 # Запуск бота
 if __name__ == "__main__":
