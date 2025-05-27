@@ -2,3 +2,4 @@ python-telegram-bot==20.7
 selenium==4.15.2
 undetected-chromedriver==3.5.4
 requests==2.31.0
+flask==3.0.0
