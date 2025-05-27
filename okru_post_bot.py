@@ -103,6 +103,17 @@ async def send_telegram_notification(message):
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления: {e}")
 
+# Функция для отправки уведомлений из обычных потоков
+def send_notification_sync(message):
+    try:
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.bot.send_message(chat_id=TELEGRAM_USER_ID, text=message))
+        loop.close()
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления: {e}")
+
 # Функция для получения всех профилей из переменных окружения
 def get_profiles():
     profiles = {}
@@ -165,17 +176,17 @@ class OKSession:
                 " | //button[contains(text(),'Да, это я')]"
             )))
             btn.click()
-            asyncio.create_task(send_telegram_notification("✅ Личность подтверждена"))
+            send_notification_sync("✅ Личность подтверждена")
             time.sleep(1)
         except:
-            asyncio.create_task(send_telegram_notification("ℹ️ Подтверждение личности не требуется"))
+            send_notification_sync("ℹ️ Подтверждение личности не требуется")
 
     def wait_for_sms_code(self, timeout=120):
         global waiting_for_sms, sms_code_received
         waiting_for_sms = True
         sms_code_received = None
         
-        asyncio.create_task(send_telegram_notification("📱 Жду SMS-код..."))
+        send_notification_sync("📱 Жду SMS-код...")
         deadline = time.time() + timeout
         
         while time.time() < deadline:
@@ -194,10 +205,10 @@ class OKSession:
             # Проверяем, авторизованы ли уже
             data_l = self.driver.find_element(By.TAG_NAME,'body').get_attribute('data-l') or ''
             if 'userMain' in data_l and 'anonymMain' not in data_l:
-                asyncio.create_task(send_telegram_notification("✅ Уже авторизован"))
+                send_notification_sync("✅ Уже авторизован")
                 return True
                 
-            asyncio.create_task(send_telegram_notification("📱 Требуется SMS"))
+            send_notification_sync("📱 Требуется SMS")
             btn = self.wait.until(EC.element_to_be_clickable((By.XPATH,
                 "//input[@type='submit' and @value='Get code']"
             )))
@@ -206,7 +217,7 @@ class OKSession:
             
             body_text = self.driver.find_element(By.TAG_NAME,'body').text.lower()
             if 'too often' in body_text:
-                asyncio.create_task(send_telegram_notification("⏰ Лимит SMS! Попробуйте позже"))
+                send_notification_sync("⏰ Лимит SMS! Попробуйте позже")
                 return False
                 
             inp = self.wait.until(EC.presence_of_element_located((By.XPATH,
@@ -222,20 +233,20 @@ class OKSession:
             )
             next_btn.click()
             
-            asyncio.create_task(send_telegram_notification("✅ SMS подтвержден"))
+            send_notification_sync("✅ SMS подтвержден")
             return True
         except Exception as e:
-            asyncio.create_task(send_telegram_notification(f"❌ Ошибка SMS: {str(e)[:50]}"))
+            send_notification_sync(f"❌ Ошибка SMS: {str(e)[:50]}")
             return False
 
     def authenticate(self):
         try:
-            asyncio.create_task(send_telegram_notification(f"🚀 Авторизация {self.person_name}"))
+            send_notification_sync(f"🚀 Авторизация {self.person_name}")
             self.init_driver()
-            asyncio.create_task(send_telegram_notification("🌐 Открываю OK.ru"))
+            send_notification_sync("🌐 Открываю OK.ru")
             self.driver.get("https://ok.ru/")
             
-            asyncio.create_task(send_telegram_notification("📝 Ввод данных"))
+            send_notification_sync("📝 Ввод данных")
             self.wait.until(EC.presence_of_element_located((By.NAME,'st.email'))).send_keys(self.email)
             self.driver.find_element(By.NAME,'st.password').send_keys(self.password)
             self.driver.find_element(By.CSS_SELECTOR, "input[type='submit']").click()
@@ -245,13 +256,13 @@ class OKSession:
             
             if self.try_sms_verification():
                 self.authenticated = True
-                asyncio.create_task(send_telegram_notification("🎉 Авторизация успешна!"))
+                send_notification_sync("🎉 Авторизация успешна!")
                 return True
             else:
-                asyncio.create_task(send_telegram_notification("❌ Авторизация провалена"))
+                send_notification_sync("❌ Авторизация провалена")
                 return False
         except Exception as e:
-            asyncio.create_task(send_telegram_notification(f"💥 Ошибка: {str(e)[:50]}"))
+            send_notification_sync(f"💥 Ошибка: {str(e)[:50]}")
             return False
 
     def wait_for_groups(self):
@@ -259,7 +270,7 @@ class OKSession:
         waiting_for_groups = True
         groups_received = None
         
-        asyncio.create_task(send_telegram_notification("📋 Жду список групп"))
+        send_notification_sync("📋 Жду список групп")
         while groups_received is None:
             time.sleep(1)
         
@@ -273,7 +284,7 @@ class OKSession:
         waiting_for_post = True
         post_info_received = None
         
-        asyncio.create_task(send_telegram_notification("📝 Жду информацию для поста"))
+        send_notification_sync("📝 Жду информацию для поста")
         while post_info_received is None:
             time.sleep(1)
         
@@ -312,15 +323,15 @@ class OKSession:
             groups = self.wait_for_groups()
             video_url, post_text = self.wait_for_post_info()
             
-            asyncio.create_task(send_telegram_notification(f"📤 Публикую в {len(groups)} групп"))
+            send_notification_sync(f"📤 Публикую в {len(groups)} групп")
             
             for i, g in enumerate(groups, 1):
-                asyncio.create_task(send_telegram_notification(f"📌 Группа {i}/{len(groups)}"))
+                send_notification_sync(f"📌 Группа {i}/{len(groups)}")
                 self.post_to_group(g, video_url, post_text)
                 
-            asyncio.create_task(send_telegram_notification("🎯 Все посты опубликованы!"))
+            send_notification_sync("🎯 Все посты опубликованы!")
         except Exception as e:
-            asyncio.create_task(send_telegram_notification(f"❌ Ошибка постинга: {str(e)[:50]}"))
+            send_notification_sync(f"❌ Ошибка постинга: {str(e)[:50]}")
             
     def close(self):
         if self.driver:
