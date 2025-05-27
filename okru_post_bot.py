@@ -374,16 +374,28 @@ async def handle_message(update, context):
     global waiting_for_sms, waiting_for_groups, waiting_for_post
     global sms_code_received, groups_received, post_info_received
     
-    user_id = str(update.message.chat.id)
+    # Получаем как chat_id, так и user_id для диагностики
+    chat_id = str(update.message.chat.id)
+    user_id = str(update.message.from_user.id)
     text = update.message.text.strip()
     
-    logger.info(f"Получено сообщение от пользователя {user_id}: {text[:50]}...")
+    logger.info(f"Получено сообщение: chat_id={chat_id}, user_id={user_id}, authorized_user={TELEGRAM_USER_ID}")
+    logger.info(f"Текст сообщения: {text[:50]}...")
+    
+    # Проверяем, что сообщение от авторизованного пользователя
+    if user_id != TELEGRAM_USER_ID and chat_id != TELEGRAM_USER_ID:
+        logger.warning(f"Неавторизованный пользователь: user_id={user_id}, chat_id={chat_id}")
+        await update.message.reply_text("❌ У вас нет доступа к этому боту")
+        return
+    
+    # Используем user_id для проверки активного пользователя
+    effective_user_id = user_id
     
     # Обработка SMS-кода
     if waiting_for_sms:
         logger.info(f"Ожидается SMS. Текущий пользователь: {current_user}")
         
-        if not is_current_user(user_id):
+        if not is_current_user(effective_user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -391,14 +403,14 @@ async def handle_message(update, context):
         if sms_match:
             sms_code_received = sms_match.group(1)
             await update.message.reply_text("✅ SMS-код получен!")
-            logger.info(f"SMS-код получен от пользователя {user_id}")
+            logger.info(f"SMS-код получен от пользователя {effective_user_id}")
             return
     
     # Обработка команды #группы
     if text.lower().startswith("#группы"):
-        logger.info(f"Получена команда #группы от пользователя {user_id}")
+        logger.info(f"Получена команда #группы от пользователя {effective_user_id}")
         
-        if not is_current_user(user_id):
+        if not is_current_user(effective_user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -409,7 +421,7 @@ async def handle_message(update, context):
                 if waiting_for_groups:
                     groups_received = urls
                     await update.message.reply_text(f"✅ Получен список из {len(urls)} групп!")
-                    logger.info(f"Получен список групп от пользователя {user_id}: {len(urls)} групп")
+                    logger.info(f"Получен список групп от пользователя {effective_user_id}: {len(urls)} групп")
                 else:
                     await update.message.reply_text("❌ Сначала нужно авторизоваться!")
             else:
@@ -418,9 +430,9 @@ async def handle_message(update, context):
     
     # Обработка команды #пост
     if text.lower().startswith("#пост"):
-        logger.info(f"Получена команда #пост от пользователя {user_id}")
+        logger.info(f"Получена команда #пост от пользователя {effective_user_id}")
         
-        if not is_current_user(user_id):
+        if not is_current_user(effective_user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -434,7 +446,7 @@ async def handle_message(update, context):
                 if waiting_for_post:
                     post_info_received = (video_url, post_text)
                     await update.message.reply_text("✅ Информация для поста получена!")
-                    logger.info(f"Получена информация для поста от пользователя {user_id}")
+                    logger.info(f"Получена информация для поста от пользователя {effective_user_id}")
                 else:
                     await update.message.reply_text("❌ Сначала нужно авторизоваться и отправить группы!")
             else:
@@ -443,13 +455,24 @@ async def handle_message(update, context):
 
 # Telegram бот функции
 async def cmd_start(update, context):
-    user_id = str(update.message.chat.id)
+    # Получаем как chat_id, так и user_id
+    chat_id = str(update.message.chat.id)
+    user_id = str(update.message.from_user.id)
     
-    logger.info(f"Команда /start от пользователя {user_id}")
+    logger.info(f"Команда /start: chat_id={chat_id}, user_id={user_id}, authorized_user={TELEGRAM_USER_ID}")
+    
+    # Проверяем, что команда от авторизованного пользователя
+    if user_id != TELEGRAM_USER_ID and chat_id != TELEGRAM_USER_ID:
+        logger.warning(f"Неавторизованный пользователь: user_id={user_id}, chat_id={chat_id}")
+        await update.message.reply_text("❌ У вас нет доступа к этому боту")
+        return
+    
+    # Используем user_id для проверки активного пользователя
+    effective_user_id = user_id
     
     # Проверяем статус бота
     if is_bot_busy():
-        if is_current_user(user_id):
+        if is_current_user(effective_user_id):
             status_msg = "🔄 Вы уже используете бота"
         else:
             status_msg = "⚠️ Бот занят другим пользователем\nПопробуйте позже"
@@ -475,7 +498,12 @@ async def cmd_start(update, context):
 async def show_profiles(update, context):
     user_id = str(update.callback_query.from_user.id)
     
-    logger.info(f"Показ профилей для пользователя {user_id}")
+    logger.info(f"Показ профилей для пользователя {user_id}, authorized_user={TELEGRAM_USER_ID}")
+    
+    # Проверяем авторизацию
+    if user_id != TELEGRAM_USER_ID:
+        await update.callback_query.edit_message_text("❌ У вас нет доступа к этому боту")
+        return
     
     # Проверяем, занят ли бот
     if is_bot_busy() and not is_current_user(user_id):
@@ -513,7 +541,12 @@ async def button_callback(update, context):
     await query.answer()
     user_id = str(query.from_user.id)
     
-    logger.info(f"Нажата кнопка {query.data} пользователем {user_id}")
+    logger.info(f"Нажата кнопка {query.data} пользователем {user_id}, authorized_user={TELEGRAM_USER_ID}")
+    
+    # Проверяем авторизацию для всех операций
+    if user_id != TELEGRAM_USER_ID:
+        await query.edit_message_text("❌ У вас нет доступа к этому боту")
+        return
     
     if query.data == 'refresh_status':
         if is_bot_busy():
@@ -596,6 +629,11 @@ async def button_callback(update, context):
 
 async def cmd_start_callback(update, context):
     user_id = str(update.callback_query.from_user.id)
+    
+    # Проверяем авторизацию
+    if user_id != TELEGRAM_USER_ID:
+        await update.callback_query.edit_message_text("❌ У вас нет доступа к этому боту")
+        return
     
     # Проверяем статус бота
     if is_bot_busy() and not is_current_user(user_id):
