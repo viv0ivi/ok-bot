@@ -17,7 +17,6 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from flask import Flask, request, jsonify
 import json
-from PIL import Image
 
 # Настройки из ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
