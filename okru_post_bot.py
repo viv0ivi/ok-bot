@@ -83,18 +83,31 @@ def is_bot_busy():
 def set_bot_busy(user_id, busy=True):
     global bot_busy, current_user
     with bot_lock:
+        # Преобразуем user_id в строку для единообразия
+        user_id_str = str(user_id)
+        
         if busy:
-            if bot_busy and current_user != user_id:
+            if bot_busy and current_user != user_id_str:
+                logger.info(f"Попытка занять бота пользователем {user_id_str}, но он занят пользователем {current_user}")
                 return False  # Бот занят другим пользователем
             bot_busy = True
-            current_user = user_id
+            current_user = user_id_str
+            logger.info(f"Бот заблокирован пользователем {user_id_str}")
         else:
             bot_busy = False
             current_user = None
+            logger.info("Бот разблокирован")
         return True
 
 def get_current_user():
     return current_user
+
+def is_current_user(user_id):
+    """Проверяет, является ли пользователь текущим активным пользователем"""
+    user_id_str = str(user_id)
+    result = current_user == user_id_str
+    logger.info(f"Проверка пользователя {user_id_str}: current_user={current_user}, result={result}")
+    return result
 
 # Функция для отправки уведомлений в Telegram
 async def send_telegram_notification(message):
@@ -341,6 +354,8 @@ class OKSession:
 def start_auth_thread(profile_data, profile_id, user_id):
     global current_session, current_profile
     
+    logger.info(f"Запуск авторизации для пользователя {user_id}")
+    
     session = OKSession(profile_data['email'], profile_data['password'], profile_data['person'])
     
     if session.authenticate():
@@ -362,9 +377,13 @@ async def handle_message(update, context):
     user_id = str(update.message.chat.id)
     text = update.message.text.strip()
     
+    logger.info(f"Получено сообщение от пользователя {user_id}: {text[:50]}...")
+    
     # Обработка SMS-кода
     if waiting_for_sms:
-        if current_user and current_user != user_id:
+        logger.info(f"Ожидается SMS. Текущий пользователь: {current_user}")
+        
+        if not is_current_user(user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -372,11 +391,14 @@ async def handle_message(update, context):
         if sms_match:
             sms_code_received = sms_match.group(1)
             await update.message.reply_text("✅ SMS-код получен!")
+            logger.info(f"SMS-код получен от пользователя {user_id}")
             return
     
     # Обработка команды #группы
     if text.lower().startswith("#группы"):
-        if current_user and current_user != user_id:
+        logger.info(f"Получена команда #группы от пользователя {user_id}")
+        
+        if not is_current_user(user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -387,6 +409,7 @@ async def handle_message(update, context):
                 if waiting_for_groups:
                     groups_received = urls
                     await update.message.reply_text(f"✅ Получен список из {len(urls)} групп!")
+                    logger.info(f"Получен список групп от пользователя {user_id}: {len(urls)} групп")
                 else:
                     await update.message.reply_text("❌ Сначала нужно авторизоваться!")
             else:
@@ -395,7 +418,9 @@ async def handle_message(update, context):
     
     # Обработка команды #пост
     if text.lower().startswith("#пост"):
-        if current_user and current_user != user_id:
+        logger.info(f"Получена команда #пост от пользователя {user_id}")
+        
+        if not is_current_user(user_id):
             await update.message.reply_text("⚠️ Бот занят другим пользователем")
             return
             
@@ -409,6 +434,7 @@ async def handle_message(update, context):
                 if waiting_for_post:
                     post_info_received = (video_url, post_text)
                     await update.message.reply_text("✅ Информация для поста получена!")
+                    logger.info(f"Получена информация для поста от пользователя {user_id}")
                 else:
                     await update.message.reply_text("❌ Сначала нужно авторизоваться и отправить группы!")
             else:
@@ -419,9 +445,11 @@ async def handle_message(update, context):
 async def cmd_start(update, context):
     user_id = str(update.message.chat.id)
     
+    logger.info(f"Команда /start от пользователя {user_id}")
+    
     # Проверяем статус бота
     if is_bot_busy():
-        if current_user == user_id:
+        if is_current_user(user_id):
             status_msg = "🔄 Вы уже используете бота"
         else:
             status_msg = "⚠️ Бот занят другим пользователем\nПопробуйте позже"
@@ -447,8 +475,10 @@ async def cmd_start(update, context):
 async def show_profiles(update, context):
     user_id = str(update.callback_query.from_user.id)
     
+    logger.info(f"Показ профилей для пользователя {user_id}")
+    
     # Проверяем, занят ли бот
-    if is_bot_busy() and current_user != user_id:
+    if is_bot_busy() and not is_current_user(user_id):
         await update.callback_query.edit_message_text(
             "⚠️ Бот занят другим пользователем\nПопробуйте позже"
         )
@@ -483,9 +513,11 @@ async def button_callback(update, context):
     await query.answer()
     user_id = str(query.from_user.id)
     
+    logger.info(f"Нажата кнопка {query.data} пользователем {user_id}")
+    
     if query.data == 'refresh_status':
         if is_bot_busy():
-            if current_user == user_id:
+            if is_current_user(user_id):
                 status_msg = "🔄 Вы уже используете бота"
             else:
                 status_msg = "⚠️ Бот все еще занят другим пользователем"
@@ -546,6 +578,8 @@ async def button_callback(update, context):
             await query.edit_message_text("❌ Профіль не знайдено!")
     
     elif query.data == 'cancel_work':
+        logger.info(f"Отмена работы пользователем {user_id}")
+        
         # Освобождаем бота
         set_bot_busy(user_id, False)
         
@@ -564,7 +598,7 @@ async def cmd_start_callback(update, context):
     user_id = str(update.callback_query.from_user.id)
     
     # Проверяем статус бота
-    if is_bot_busy() and current_user != user_id:
+    if is_bot_busy() and not is_current_user(user_id):
         await update.callback_query.edit_message_text(
             "⚠️ Бот занят другим пользователем\nПопробуйте позже"
         )
