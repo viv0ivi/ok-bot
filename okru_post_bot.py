@@ -5,7 +5,6 @@ import logging
 import sys
 import threading
 import asyncio
-from queue import Queue
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -19,22 +18,22 @@ import json
 
 # Настройки из ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")  # ID группового чата
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://your-app.onrender.com/webhook
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 
-# Проверка переменных окружения
+# Проверка переменной окружения
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Не задана обязательная переменная окружения: TELEGRAM_BOT_TOKEN")
 
-if not TELEGRAM_GROUP_ID:
-    raise RuntimeError("Не задана обязательная переменная окружения: TELEGRAM_GROUP_ID")
+if not TELEGRAM_USER_ID:
+    raise RuntimeError("Не задана обязательная переменная окружения: TELEGRAM_USER_ID")
 
 # Логирование
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger("okru_bot")
 
-# Глобальные переменные
+# Глобальные переменные для сессии и ожидания команд
 current_session = None
 current_profile = None
 waiting_for_sms = False
@@ -43,17 +42,21 @@ waiting_for_post = False
 sms_code_received = None
 groups_received = None
 post_info_received = None
-bot_stopped = False
-
-# Простая очередь задач
-task_queue = Queue()
-current_user = None
+bot_running = True
 
 # Flask app
 app = Flask(__name__)
 
-# Telegram приложение
+# Telegram приложение (глобальная переменная)
 application = None
+
+# Функция для отправки сообщений в Telegram
+async def send_telegram_message(text):
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text=text)
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения в Telegram: {e}")
 
 @app.route('/')
 def health_check():
@@ -77,18 +80,7 @@ async def webhook():
             return jsonify({"status": "error", "message": str(e)}), 500
     return jsonify({"status": "error", "message": "Invalid content type"}), 400
 
-# Функция для отправки сообщений в группу
-async def send_to_group(text, reply_markup=None):
-    try:
-        await application.bot.send_message(
-            chat_id=TELEGRAM_GROUP_ID,
-            text=text,
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logger.error(f"Ошибка отправки в группу: {e}")
-
-# Функция для получения всех профилей
+# Функция для получения всех профилей из переменных окружения
 def get_profiles():
     profiles = {}
     i = 1
@@ -107,6 +99,7 @@ def get_profiles():
         }
         i += 1
     
+    # Если нет пронумерованных, проверяем без номера
     if not profiles:
         person = os.getenv("OK_PERSON")
         email = os.getenv("OK_EMAIL")
@@ -123,19 +116,18 @@ def get_profiles():
 
 # Класс для работы с OK.ru
 class OKSession:
-    def __init__(self, email, password, person_name, user_name):
+    def __init__(self, email, password, person_name):
         self.email = email
         self.password = password
         self.person_name = person_name
-        self.user_name = user_name
         self.driver = None
         self.wait = None
         self.authenticated = False
         
-    async def log_to_group(self, message):
-        """Отправка логов в группу"""
-        log_message = f"👤 {self.user_name} | {self.person_name}\n{message}"
-        await send_to_group(log_message)
+    async def send_status(self, message):
+        """Отправляет статус авторизации в Telegram"""
+        status_message = f"👤 {self.person_name}\n{message}"
+        await send_telegram_message(status_message)
         
     def init_driver(self):
         opts = uc.ChromeOptions()
@@ -147,7 +139,7 @@ class OKSession:
         self.driver = uc.Chrome(options=opts)
         self.wait = WebDriverWait(self.driver, 20)
         
-    def try_confirm_identity(self):
+    async def try_confirm_identity(self):
         try:
             btn = self.wait.until(EC.element_to_be_clickable((By.XPATH,
                 "//input[@value='Yes, confirm']"
@@ -155,39 +147,41 @@ class OKSession:
                 " | //button[contains(text(),'Да, это я')]"
             )))
             btn.click()
+            await self.send_status("✅ Личность подтверждена")
             time.sleep(1)
         except:
-            pass
+            await self.send_status("ℹ️ Подтверждение не требуется")
 
     def wait_for_sms_code(self, timeout=120):
         global waiting_for_sms, sms_code_received
         waiting_for_sms = True
         sms_code_received = None
         
+        logger.info("Ожидаю SMS-код")
         deadline = time.time() + timeout
         
         while time.time() < deadline:
-            if bot_stopped:
-                waiting_for_sms = False
-                raise Exception("Бот остановлен")
             if sms_code_received is not None:
                 code = sms_code_received
                 sms_code_received = None
                 waiting_for_sms = False
+                logger.info("SMS-код получен")
                 return code
             time.sleep(1)
         
         waiting_for_sms = False
+        logger.error("Не получили SMS-код")
         raise TimeoutException("SMS-код не получен")
 
     async def try_sms_verification(self):
         try:
+            await self.send_status("🔍 Проверяю статус...")
             data_l = self.driver.find_element(By.TAG_NAME,'body').get_attribute('data-l') or ''
             if 'userMain' in data_l and 'anonymMain' not in data_l:
-                await self.log_to_group("✅ Уже авторизован")
+                await self.send_status("✅ Уже авторизован!")
                 return True
                 
-            await self.log_to_group("📱 Нужен SMS")
+            await self.send_status("📱 Нужна SMS-верификация")
             btn = self.wait.until(EC.element_to_be_clickable((By.XPATH,
                 "//input[@type='submit' and @value='Get code']"
             )))
@@ -196,16 +190,17 @@ class OKSession:
             
             body_text = self.driver.find_element(By.TAG_NAME,'body').text.lower()
             if 'too often' in body_text:
-                await self.log_to_group("⏰ Лимит SMS! Попробуйте позже")
+                await self.send_status("⏰ Слишком часто! Попробуйте позже")
                 return False
                 
+            await self.send_status("⌛ Жду SMS-код...")
             inp = self.wait.until(EC.presence_of_element_located((By.XPATH,
                 "//input[@id='smsCode' or contains(@name,'smsCode')]"
             )))
             
-            await self.log_to_group("⌛ Жду SMS-код...")
             code = self.wait_for_sms_code()
             
+            await self.send_status("🔢 Ввожу код...")
             inp.clear()
             inp.send_keys(code)
             next_btn = self.driver.find_element(By.XPATH,
@@ -213,38 +208,37 @@ class OKSession:
             )
             next_btn.click()
             
-            await self.log_to_group("✅ SMS принят")
+            await self.send_status("✅ SMS подтвержден!")
             return True
         except Exception as e:
-            await self.log_to_group(f"❌ Ошибка SMS: {str(e)[:50]}")
+            await self.send_status(f"❌ Ошибка SMS: {str(e)[:50]}...")
             return False
 
     async def authenticate(self):
         try:
-            if bot_stopped:
-                return False
-                
-            await self.log_to_group("🚀 Начинаю авторизацию")
+            await self.send_status("🚀 Начинаю авторизацию...")
             self.init_driver()
+            
+            await self.send_status("🌐 Открываю OK.ru...")
             self.driver.get("https://ok.ru/")
             
-            await self.log_to_group("📝 Ввожу данные")
+            await self.send_status("📝 Ввожу данные...")
             self.wait.until(EC.presence_of_element_located((By.NAME,'st.email'))).send_keys(self.email)
             self.driver.find_element(By.NAME,'st.password').send_keys(self.password)
             self.driver.find_element(By.CSS_SELECTOR, "input[type='submit']").click()
             time.sleep(2)
             
-            self.try_confirm_identity()
+            await self.try_confirm_identity()
             
             if await self.try_sms_verification():
                 self.authenticated = True
-                await self.log_to_group("🎉 Авторизация успешна")
+                await self.send_status("🎉 Авторизация успешна!")
                 return True
             else:
-                await self.log_to_group("❌ Авторизация провалена")
+                await self.send_status("❌ Авторизация провалена")
                 return False
         except Exception as e:
-            await self.log_to_group(f"💥 Ошибка: {str(e)[:50]}")
+            await self.send_status(f"💥 Ошибка: {str(e)[:50]}...")
             return False
 
     def wait_for_groups(self):
@@ -252,15 +246,14 @@ class OKSession:
         waiting_for_groups = True
         groups_received = None
         
-        while groups_received is None and not bot_stopped:
+        logger.info("Жду команду #группы")
+        while groups_received is None:
             time.sleep(1)
         
-        if bot_stopped:
-            return None
-            
         groups = groups_received
         groups_received = None
         waiting_for_groups = False
+        logger.info("Список групп получен")
         return groups
 
     def wait_for_post_info(self):
@@ -268,113 +261,115 @@ class OKSession:
         waiting_for_post = True
         post_info_received = None
         
-        while post_info_received is None and not bot_stopped:
+        logger.info("Жду команду #пост")
+        while post_info_received is None:
             time.sleep(1)
         
-        if bot_stopped:
-            return None, None
-            
         post_info = post_info_received
         post_info_received = None
         waiting_for_post = False
+        logger.info("Инфо для поста получено")
         return post_info
 
     async def post_to_group(self, group_url, video_url, text):
         self.driver.get(group_url.rstrip('/') + '/post')
+        logger.info("Открываю страницу постинга")
         field = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
             "div[contenteditable='true']"
         )))
         field.click()
         field.clear()
+        # 1) вставляем ссылку
         field.send_keys(video_url)
-        
+        logger.info("Ссылка вставлена")
+        # 2) ждём карточку
+        logger.info("Жду видео-карточку")
         self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR,
             "div.vid-card.vid-card__xl"
         )))
-        
+        # 3) по строкам вставляем текст
+        logger.info("Вставляю текст по строкам")
         for line in text.splitlines():
             field.send_keys(line)
             field.send_keys(Keys.SHIFT, Keys.ENTER)
             time.sleep(5)
-            
+        # 4) публикуем
         btn = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
             "button.js-pf-submit-btn[data-action='submit']"
         )))
         btn.click()
+        logger.info("Пост опубликован")
+        await self.send_status("📝 Пост опубликован в группе")
         time.sleep(1)
 
     async def start_posting_workflow(self):
         try:
-            if bot_stopped:
-                return
-                
-            await self.log_to_group("📋 Жду список групп")
+            await self.send_status("⏳ Жду команду #группы...")
             groups = self.wait_for_groups()
-            if not groups or bot_stopped:
-                return
-                
-            await self.log_to_group(f"✅ Получено {len(groups)} групп")
-            
-            await self.log_to_group("📝 Жду пост")
+            await self.send_status("⏳ Жду команду #пост...")
             video_url, post_text = self.wait_for_post_info()
-            if not video_url or bot_stopped:
-                return
-                
-            await self.log_to_group("🚀 Начинаю постинг")
-            for i, group in enumerate(groups, 1):
-                if bot_stopped:
-                    break
-                await self.log_to_group(f"📮 Пост {i}/{len(groups)}")
-                await self.post_to_group(group, video_url, post_text)
-                
-            if not bot_stopped:
-                await self.log_to_group("🎉 Все посты опубликованы")
+            await self.send_status(f"🚀 Начинаю постинг в {len(groups)} групп...")
+            for i, g in enumerate(groups, 1):
+                await self.post_to_group(g, video_url, post_text)
+                await self.send_status(f"✅ {i}/{len(groups)} групп обработано")
+            await self.send_status("🎉 Все задачи выполнены!")
         except Exception as e:
-            await self.log_to_group(f"❌ Ошибка: {str(e)[:50]}")
+            await self.send_status(f"❌ Ошибка: {str(e)[:50]}...")
             
     def close(self):
         if self.driver:
             self.driver.quit()
+            logger.info("Сессия закрыта")
 
-# Функция запуска авторизации
-async def start_auth_thread(profile_data, profile_id, user_name):
-    global current_session, current_profile, current_user
+# Функция для запуска авторизации в отдельном потоке
+def start_auth_thread(profile_data, profile_id):
+    global current_session, current_profile, bot_running
     
-    session = OKSession(profile_data['email'], profile_data['password'], 
-                       profile_data['person'], user_name)
+    async def auth_process():
+        global current_session, current_profile
+        logger.info(f"🔄 Создаю сессию для {profile_data['person']}")
+        session = OKSession(profile_data['email'], profile_data['password'], profile_data['person'])
+        
+        logger.info(f"🚀 Запускаю процесс авторизации для {profile_data['person']}")
+        if await session.authenticate():
+            current_session = session
+            current_profile = profile_id
+            logger.info(f"🎯 Сессия активна для {profile_data['person']}. Готов к получению команд!")
+            # После успешной авторизации запускаем рабочий процесс
+            logger.info(f"▶️ Запускаю рабочий процесс для {profile_data['person']}")
+            await session.start_posting_workflow()
+        else:
+            logger.error(f"🚫 АВТОРИЗАЦИЯ ПРОВАЛЕНА для {profile_data['person']}")
+            session.close()
     
-    if await session.authenticate():
-        current_session = session
-        current_profile = profile_id
-        current_user = user_name
-        await session.start_posting_workflow()
-    else:
-        session.close()
-
-# Проверка прав в группе
-def is_group_member(update):
-    return str(update.effective_chat.id) == TELEGRAM_GROUP_ID
+    # Запускаем асинхронную функцию в новом event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(auth_process())
+    finally:
+        loop.close()
 
 # Обработчик текстовых сообщений
 async def handle_message(update, context):
     global waiting_for_sms, waiting_for_groups, waiting_for_post
     global sms_code_received, groups_received, post_info_received
     
-    if not is_group_member(update):
+    # Проверяем, что сообщение от нужного пользователя
+    if str(update.message.chat.id) != TELEGRAM_USER_ID:
         return
     
     text = update.message.text.strip()
-    user_name = update.message.from_user.first_name or "Пользователь"
     
-    # SMS-код
+    # Обработка SMS-кода
     if waiting_for_sms:
         sms_match = re.match(r"^(?:#код\s*)?(\d{4,6})$", text, re.IGNORECASE)
         if sms_match:
             sms_code_received = sms_match.group(1)
-            await update.message.reply_text("✅ SMS получен")
+            await update.message.reply_text("✅ SMS-код получен!")
             return
     
-    # Группы
+    # Обработка команды #группы
     if text.lower().startswith("#группы"):
         groups_match = re.match(r"#группы\s+(.+)", text, re.IGNORECASE)
         if groups_match:
@@ -382,14 +377,14 @@ async def handle_message(update, context):
             if urls:
                 if waiting_for_groups:
                     groups_received = urls
-                    await update.message.reply_text(f"✅ {len(urls)} групп получено")
+                    await update.message.reply_text(f"✅ Получен список из {len(urls)} групп!")
                 else:
-                    await update.message.reply_text("❌ Сначала авторизуйтесь")
+                    await update.message.reply_text("❌ Сначала нужно авторизоваться!")
             else:
-                await update.message.reply_text("❌ Неверные ссылки на группы")
+                await update.message.reply_text("❌ Не найдены корректные ссылки на группы!")
         return
     
-    # Пост
+    # Обработка команды #пост
     if text.lower().startswith("#пост"):
         post_match = re.match(r"#пост\s+(.+)", text, re.IGNORECASE)
         if post_match:
@@ -400,137 +395,144 @@ async def handle_message(update, context):
                 post_text = rest.replace(video_url, "").strip()
                 if waiting_for_post:
                     post_info_received = (video_url, post_text)
-                    await update.message.reply_text("✅ Пост получен")
+                    await update.message.reply_text("✅ Информация для поста получена!")
                 else:
-                    await update.message.reply_text("❌ Сначала отправьте группы")
+                    await update.message.reply_text("❌ Сначала нужно авторизоваться и отправить группы!")
             else:
-                await update.message.reply_text("❌ Нет ссылки на видео")
+                await update.message.reply_text("❌ Не найдена ссылка на видео!")
         return
 
-# Команда /start
+# Telegram бот функции
 async def cmd_start(update, context):
-    if not is_group_member(update):
-        return
-        
-    user_name = update.message.from_user.first_name or "Пользователь"
-    
-    # Проверяем очередь
-    if not task_queue.empty() or current_user:
-        queue_size = task_queue.qsize()
-        if current_user:
-            queue_size += 1
-        await update.message.reply_text(f"⏳ В очереди: {queue_size} человек")
-        return
-    
     inline_keyboard = [
-        [InlineKeyboardButton("🌿 Выбрать профиль", callback_data=f'branch_{user_name}')],
-        [InlineKeyboardButton("🛑 Остановить бота", callback_data='stop_bot')]
+        [InlineKeyboardButton("🌿 Розгалуджувати", callback_data='branch')]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
     
     await update.message.reply_text(
-        f"Привет, {user_name}! Выберите действие:",
+        "Вітаю! Оберіть дію:",
         reply_markup=reply_markup
     )
 
-async def show_profiles(update, context, user_name):
+async def show_profiles(update, context):
     profiles = get_profiles()
     
     if not profiles:
-        await update.callback_query.edit_message_text("❌ Профили не найдены")
+        await update.callback_query.edit_message_text(
+            "❌ Профілі не знайдені!\nПеревірте налаштування змінних оточення."
+        )
         return
     
     inline_keyboard = []
     for profile_id, profile_data in profiles.items():
         button_text = f"👤 {profile_data['person']}"
-        callback_data = f"profile_{profile_id}_{user_name}"
+        callback_data = f"profile_{profile_id}"
         inline_keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
     
-    inline_keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f'back_to_start_{user_name}')])
-    inline_keyboard.append([InlineKeyboardButton("🛑 Остановить", callback_data='stop_bot')])
+    # Добавляем кнопку "Назад"
+    inline_keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back_to_start')])
     
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
     
     await update.callback_query.edit_message_text(
-        "Выберите профиль:",
+        "Оберіть профіль для авторизації:",
         reply_markup=reply_markup
     )
 
-async def button_callback(update, context):
-    global bot_stopped, current_session, current_user
+async def show_control_panel(update, context, profile_name):
+    """Показывает панель управления после выбора профиля"""
+    message = f"✅ Обрано профіль: {profile_name}\n"
+    message += "🔄 Виконується авторизація...\n\n"
+    message += "📱 Якщо потрібен SMS-код, надішліть його:\n"
+    message += "#код 123456\n\n"
+    message += "Або використовуйте кнопки нижче:"
     
-    if not is_group_member(update):
-        return
-        
+    inline_keyboard = [
+        [InlineKeyboardButton("📋 Додати #группы", callback_data='add_groups')],
+        [InlineKeyboardButton("📝 Додати #пост", callback_data='add_post')],
+        [InlineKeyboardButton("🛑 Зупинити бота", callback_data='stop_bot')],
+        [InlineKeyboardButton("🔙 Обрати інший профіль", callback_data='branch')],
+        [InlineKeyboardButton("🏠 На початок", callback_data='back_to_start')]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard)
+    
+    await update.callback_query.edit_message_text(message, reply_markup=reply_markup)
+
+async def button_callback(update, context):
+    global bot_running, current_session
     query = update.callback_query
     await query.answer()
     
-    # Остановка бота
-    if query.data == 'stop_bot':
-        bot_stopped = True
+    if query.data == 'branch':
+        await show_profiles(update, context)
+    
+    elif query.data.startswith('profile_'):
+        profile_id = int(query.data.split('_')[1])
+        profiles = get_profiles()
+        
+        if profile_id in profiles:
+            selected_profile = profiles[profile_id]
+            
+            await show_control_panel(update, context, selected_profile['person'])
+            
+            # Запускаем авторизацию в отдельном потоке
+            auth_thread = threading.Thread(
+                target=start_auth_thread, 
+                args=(selected_profile, profile_id)
+            )
+            auth_thread.daemon = True
+            auth_thread.start()
+            
+            logger.info(f"Запущена авторизация для профиля: {selected_profile['person']}")
+        else:
+            await query.edit_message_text("❌ Профіль не знайдено!")
+    
+    elif query.data == 'add_groups':
+        await query.edit_message_text(
+            "📋 Скопіюйте та відправте:\n\n"
+            "`#группы https://ok.ru/group/123456789 https://ok.ru/group/987654321`\n\n"
+            "Замініть посилання на ваші групи",
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == 'add_post':
+        await query.edit_message_text(
+            "📝 Скопіюйте та відправте:\n\n"
+            "`#пост https://www.youtube.com/watch?v=example Ваш текст поста тут`\n\n"
+            "Замініть посилання та текст на ваші",
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == 'stop_bot':
+        bot_running = False
         if current_session:
             current_session.close()
             current_session = None
-        current_user = None
-        
-        # Очищаем очередь
-        while not task_queue.empty():
-            task_queue.get()
-            
-        await query.edit_message_text("🛑 Бот остановлен")
-        await send_to_group("🛑 Бот остановлен всеми задачами")
-        return
-    
-    # Извлекаем имя пользователя из callback_data
-    parts = query.data.split('_')
-    if len(parts) < 2:
-        return
-        
-    user_name = parts[-1]
-    
-    if query.data.startswith('branch_'):
-        await show_profiles(update, context, user_name)
-    
-    elif query.data.startswith('profile_'):
-        profile_id = int(parts[1])
-        profiles = get_profiles()
-        
-        if profile_id in profiles and not bot_stopped:
-            selected_profile = profiles[profile_id]
-            
-            message = f"✅ Профиль: {selected_profile['person']}\n"
-            message += "🔄 Авторизация...\n\n"
-            message += "Отправьте:\n"
-            message += "📱 SMS: #код 123456\n"
-            message += "📋 #группы [ссылки]\n"
-            message += "📝 #пост [видео] [текст]"
-            
-            inline_keyboard = [
-                [InlineKeyboardButton("🔙 Другой профиль", callback_data=f'branch_{user_name}')],
-                [InlineKeyboardButton("🛑 Стоп", callback_data='stop_bot')]
-            ]
-            reply_markup = InlineKeyboardMarkup(inline_keyboard)
-            
-            await query.edit_message_text(message, reply_markup=reply_markup)
-            
-            # Запускаем авторизацию
-            auth_task = asyncio.create_task(
-                start_auth_thread(selected_profile, profile_id, user_name)
-            )
-    
-    elif query.data.startswith('back_to_start_'):
-        inline_keyboard = [
-            [InlineKeyboardButton("🌿 Выбрать профиль", callback_data=f'branch_{user_name}')],
-            [InlineKeyboardButton("🛑 Остановить бота", callback_data='stop_bot')]
-        ]
-        reply_markup = InlineKeyboardMarkup(inline_keyboard)
         
         await query.edit_message_text(
-            f"Привет, {user_name}! Выберите действие:",
-            reply_markup=reply_markup
+            "🛑 Бот зупинено\n"
+            "Всі активні сесії закрито\n\n"
+            "Для перезапуску використайте /start"
         )
+        
+        # Завершаем работу приложения
+        os._exit(0)
+    
+    elif query.data == 'back_to_start':
+        await cmd_start_callback(update, context)
 
-# Создание приложения
+async def cmd_start_callback(update, context):
+    inline_keyboard = [
+        [InlineKeyboardButton("🌿 Розгалуджувати", callback_data='branch')]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard)
+    
+    await update.callback_query.edit_message_text(
+        "Вітаю! Оберіть дію:",
+        reply_markup=reply_markup
+    )
+
+# Создание Telegram приложения
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # Регистрация обработчиков
@@ -538,27 +540,31 @@ application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CallbackQueryHandler(button_callback))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Запуск
+# Запуск бота
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     
     if USE_WEBHOOK and WEBHOOK_URL:
         logger.info("🌐 Запуск в режиме Webhook")
         
+        # Настройка webhook
         async def set_webhook():
             await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
             logger.info(f"Webhook установлен: {WEBHOOK_URL}/webhook")
         
+        # Запускаем установку webhook
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(set_webhook())
         
-        logger.info(f"🚀 Flask сервер на порту {port}")
+        # Запускаем Flask
+        logger.info(f"🚀 Запуск Flask сервера на порту {port}")
         app.run(host='0.0.0.0', port=port, debug=False)
         
     else:
-        logger.info("🤖 Режим Polling")
+        logger.info("🤖 Запуск в режиме Polling")
         
+        # Запускаем Flask в отдельном потоке для health check
         def run_flask():
             app.run(host='0.0.0.0', port=port, debug=False)
         
@@ -566,16 +572,23 @@ if __name__ == "__main__":
         flask_thread.daemon = True
         flask_thread.start()
         
+        logger.info("🌐 Flask health check запущен")
+        
         try:
+            # Сначала удаляем webhook если он был установлен
             async def clear_webhook():
                 await application.bot.delete_webhook()
+                logger.info("Webhook удален")
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(clear_webhook())
             
+            # Запускаем polling
             application.run_polling()
         finally:
+            # Закрываем активную сессию при завершении
             if current_session:
+                logger.info("🔄 Закрываю активную сессию...")
                 current_session.close()
             logger.info("👋 Бот остановлен")
