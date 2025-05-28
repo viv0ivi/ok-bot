@@ -549,19 +549,31 @@ async def button_callback(update, context):
             await query.edit_message_text("❌ Профіль не знайдено!")
     
     elif query.data == 'add_groups':
+        inline_keyboard = [
+            [InlineKeyboardButton("🔙 Повернутися до панелі", callback_data='back_to_control_panel')]
+        ]
+        reply_markup = InlineKeyboardMarkup(inline_keyboard)
+        
         await query.edit_message_text(
             "📋 Скопіюйте та відправте:\n\n"
             "`#группы https://ok.ru/group/123456789 https://ok.ru/group/987654321`\n\n"
             "Замініть посилання на ваші групи",
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            reply_markup=reply_markup
         )
     
     elif query.data == 'add_post':
+        inline_keyboard = [
+            [InlineKeyboardButton("🔙 Повернутися до панелі", callback_data='back_to_control_panel')]
+        ]
+        reply_markup = InlineKeyboardMarkup(inline_keyboard)
+        
         await query.edit_message_text(
             "📝 Скопіюйте та відправте:\n\n"
             "`#пост https://www.youtube.com/watch?v=example Ваш текст поста тут`\n\n"
             "Замініть посилання та текст на ваші",
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            reply_markup=reply_markup
         )
     
     elif query.data == 'stop_bot':
@@ -581,6 +593,18 @@ async def button_callback(update, context):
     
     elif query.data == 'back_to_start':
         await cmd_start_callback(update, context)
+    
+    elif query.data == 'back_to_control_panel':
+        # Возвращаемся к панели управления текущего профиля
+        if current_profile is not None:
+            profiles = get_profiles()
+            if current_profile in profiles:
+                profile_name = profiles[current_profile]['person']
+                await show_control_panel(update, context, profile_name)
+            else:
+                await cmd_start_callback(update, context)
+        else:
+            await cmd_start_callback(update, context)
 
 async def cmd_start_callback(update, context):
     inline_keyboard = [
