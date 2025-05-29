@@ -329,53 +329,53 @@ class OKSession:
         logger.info("Инфо для поста получено")
         return post_info
 
-    async def post_to_group(self, group_url, video_url, text):
-    post_url = group_url.rstrip('/') + '/post'
-    logger.info("🚀 Открываю страницу постинга")
-    self.driver.get(post_url)
-    
-    # Ждем загрузки поля для ввода
-    box = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
-        "div[contenteditable='true']"
-    )))
-    box.click()
-    box.clear()
-    
-    # 1) Вставляем ссылку и пробел для загрузки превью
-    box.send_keys(video_url)
-    box.send_keys(Keys.SPACE)  # Критически важно для загрузки превью!
-    logger.info("✍️ Ссылка вставлена и пробел отправлен")
-    
-    # 2) Ждём появление карточки превью с несколькими селекторами
-    logger.info("⏳ Жду видео-карточку...")
-    attached = False
-    for _ in range(10):  # 10 секунд ожидания
-        # Проверяем различные типы карточек превью
-        if self.driver.find_elements(By.CSS_SELECTOR, "div.vid-card.vid-card__xl"):
-            attached = True
-            break
-        if self.driver.find_elements(By.CSS_SELECTOR, "div.mediaPreview, div.mediaFlex, div.preview_thumb"):
-            attached = True
-            break
+        async def post_to_group(self, group_url, video_url, text):
+        post_url = group_url.rstrip('/') + '/post'
+        logger.info("🚀 Открываю страницу постинга")
+        self.driver.get(post_url)
+        
+        # Ждем загрузки поля для ввода
+        box = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
+            "div[contenteditable='true']"
+        )))
+        box.click()
+        box.clear()
+        
+        # 1) Вставляем ссылку и пробел для загрузки превью
+        box.send_keys(video_url)
+        box.send_keys(Keys.SPACE)  # Критически важно для загрузки превью!
+        logger.info("✍️ Ссылка вставлена и пробел отправлен")
+        
+        # 2) Ждём появление карточки превью с несколькими селекторами
+        logger.info("⏳ Жду видео-карточку...")
+        attached = False
+        for _ in range(10):  # 10 секунд ожидания
+            # Проверяем различные типы карточек превью
+            if self.driver.find_elements(By.CSS_SELECTOR, "div.vid-card.vid-card__xl"):
+                attached = True
+                break
+            if self.driver.find_elements(By.CSS_SELECTOR, "div.mediaPreview, div.mediaFlex, div.preview_thumb"):
+                attached = True
+                break
+            time.sleep(1)
+        
+        if attached:
+            logger.info("✅ Видео-карта появилась")
+        else:
+            logger.warning(f"⚠️ Не дождался карточки видео за 10 сек на {group_url}")
+        
+        # 3) Вставляем текст одной строкой (не построчно!)
+        box.send_keys(" " + text)  # Пробел + весь текст сразу
+        logger.info("✍️ Текст вставлен")
+        
+        # 4) Публикуем
+        btn = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
+            "button.js-pf-submit-btn[data-action='submit']"
+        )))
+        btn.click()
+        logger.info("✅ Пост опубликован")
+        await self.send_status("📝 Пост опубликован в группе")
         time.sleep(1)
-    
-    if attached:
-        logger.info("✅ Видео-карта появилась")
-    else:
-        logger.warning(f"⚠️ Не дождался карточки видео за 10 сек на {group_url}")
-    
-    # 3) Вставляем текст одной строкой (не построчно!)
-    box.send_keys(" " + text)  # Пробел + весь текст сразу
-    logger.info("✍️ Текст вставлен")
-    
-    # 4) Публикуем
-    btn = self.wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR,
-        "button.js-pf-submit-btn[data-action='submit']"
-    )))
-    btn.click()
-    logger.info("✅ Пост опубликован")
-    await self.send_status("📝 Пост опубликован в группе")
-    time.sleep(1)
     
     async def start_posting_workflow(self):
         try:
