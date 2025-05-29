@@ -488,7 +488,7 @@ async def cmd_start(update, context):
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
     
     await update.message.reply_text(
-        "Вітаю! Оберіть дію:",
+        "Віталися Вітатись!",
         reply_markup=reply_markup
     )
 
