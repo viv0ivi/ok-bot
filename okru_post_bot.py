@@ -537,7 +537,7 @@ async def show_control_panel(update, context, profile_name):
     await update.callback_query.edit_message_text(message, reply_markup=reply_markup)
 
 async def button_callback(update, context):
-    global bot_running, current_session
+    global bot_running, current_session, current_profile
     query = update.callback_query
     await query.answer()
     
