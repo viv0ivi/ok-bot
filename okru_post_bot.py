@@ -329,7 +329,7 @@ class OKSession:
         logger.info("Инфо для поста получено")
         return post_info
 
-        async def post_to_group(self, group_url, video_url, text):
+    async def post_to_group(self, group_url, video_url, text):
         post_url = group_url.rstrip('/') + '/post'
         logger.info("🚀 Открываю страницу постинга")
         self.driver.get(post_url)
